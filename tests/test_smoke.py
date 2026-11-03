@@ -154,6 +154,68 @@ class TestRecommendationEngine:
         assert scores == sorted(scores, reverse=True), "Scores must be in descending order"
 
 
+# ── Phase 4: Card HTML Safety ─────────────────────────────────────────────────
+class TestCardHtml:
+    """Ensure _movie_card_html never emits raw angle brackets in attribute values.
+
+    Raw SVG or unescaped titles inside HTML attributes break Streamlit's
+    markdown parser and cause subsequent cards to render as literal text.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub_all(self, monkeypatch):
+        fake_st = types.ModuleType("streamlit")
+        fake_st.cache_data = lambda **kw: (lambda f: f)
+        fake_st.cache_resource = lambda **kw: (lambda f: f)
+        fake_st.set_page_config = lambda **kw: None
+        fake_st.secrets = {}
+        fake_dotenv = types.ModuleType("dotenv")
+        fake_dotenv.load_dotenv = lambda: None
+        monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+        monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+        sys.modules.pop("app", None)
+        if REPO_ROOT not in sys.path:
+            sys.path.insert(0, REPO_ROOT)
+
+    def test_placeholder_is_base64(self):
+        import app as app_mod
+        assert "base64," in app_mod.PLACEHOLDER_POSTER, (
+            "PLACEHOLDER_POSTER must be base64-encoded so it is safe inside HTML attributes"
+        )
+        assert "<" not in app_mod.PLACEHOLDER_POSTER, (
+            "PLACEHOLDER_POSTER must not contain raw '<' — it breaks Streamlit's HTML parser"
+        )
+
+    def test_card_html_no_bare_angle_brackets_in_attrs(self):
+        """No raw < or > inside any HTML attribute value in a card."""
+        import app as app_mod
+        rec = {
+            "title": "Batman & Robin <Action>",   # worst-case title
+            "movie_id": 123,
+            "poster": app_mod.PLACEHOLDER_POSTER,
+            "score": 72.5,
+        }
+        html = app_mod._movie_card_html(rec)
+        # Split on attribute boundaries and check each value
+        import re
+        attr_values = re.findall(r'="([^"]*)"', html)
+        for val in attr_values:
+            assert "<" not in val, f"Raw '<' found inside attribute value: {val!r}"
+            assert ">" not in val, f"Raw '>' found inside attribute value: {val!r}"
+
+    def test_card_html_ampersand_escaped_in_title(self):
+        import app as app_mod
+        rec = {
+            "title": "Batman & Robin",
+            "movie_id": 456,
+            "poster": "https://image.tmdb.org/t/p/w500/poster.jpg",
+            "score": 55.0,
+        }
+        html = app_mod._movie_card_html(rec)
+        assert "&amp;" in html, "Ampersand in title must be HTML-escaped to &amp;"
+        assert "Batman & Robin" not in html, "Raw & must not appear in card HTML"
+
+
 # ── Phase 3: Key Resolution ───────────────────────────────────────────────────
 class TestApiKeyResolution:
     """Verify st.secrets → os.getenv fallback chain without network calls."""

@@ -38,23 +38,26 @@ def _resolve_api_key() -> str:
 
 TMDB_API_KEY = _resolve_api_key()
 
-# ── Fallback SVG Poster ───────────────────────────────────────────────────────
+# ── Fallback SVG Poster (base64-encoded — safe inside HTML attributes) ────────
+# Raw SVG with '<' '>' would break Streamlit's markdown HTML parser mid-grid.
+# base64 is a clean alphanumeric string that never clashes with HTML syntax.
 PLACEHOLDER_POSTER = (
-    "data:image/svg+xml;utf8,"
-    "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='450' viewBox='0 0 300 450'>"
-    "<defs>"
-    "<linearGradient id='bg' x1='0' y1='0' x2='0' y2='1'>"
-    "<stop offset='0%' stop-color='%230F3460'/>"
-    "<stop offset='100%' stop-color='%2316213E'/>"
-    "</linearGradient>"
-    "</defs>"
-    "<rect width='300' height='450' fill='url(%23bg)'/>"
-    "<rect x='20' y='20' width='260' height='410' rx='8' fill='none' stroke='%23E94560' stroke-width='1' stroke-opacity='0.3'/>"
-    "<circle cx='150' cy='170' r='48' fill='%2316213E' stroke='%23E94560' stroke-width='1.5'/>"
-    "<polygon points='140,153 173,170 140,187' fill='%23E94560'/>"
-    "<text x='150' y='255' font-family='Arial,sans-serif' font-size='15' fill='%23EAEAEA' font-weight='bold' text-anchor='middle'>No Poster</text>"
-    "<text x='150' y='277' font-family='Arial,sans-serif' font-size='11' fill='%23777' text-anchor='middle'>Available</text>"
-    "</svg>"
+    "data:image/svg+xml;base64,"
+    "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdo"
+    "dD0iNDUwIiB2aWV3Qm94PSIwIDAgMzAwIDQ1MCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJi"
+    "ZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMCIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCUiIHN0b3AtY29s"
+    "b3I9IiMwRjM0NjAiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiMxNjIxM0UiLz48"
+    "L2xpbmVhckdyYWRpZW50PjwvZGVmcz48cmVjdCB3aWR0aD0iMzAwIiBoZWlnaHQ9IjQ1MCIgZmls"
+    "bD0idXJsKCNiZykiLz48cmVjdCB4PSIyMCIgeT0iMjAiIHdpZHRoPSIyNjAiIGhlaWdodD0iNDEw"
+    "IiByeD0iOCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRTk0NTYwIiBzdHJva2Utd2lkdGg9IjEiIHN0"
+    "cm9rZS1vcGFjaXR5PSIwLjMiLz48Y2lyY2xlIGN4PSIxNTAiIGN5PSIxNzAiIHI9IjQ4IiBmaWxs"
+    "PSIjMTYyMTNFIiBzdHJva2U9IiNFOTQ1NjAiIHN0cm9rZS13aWR0aD0iMS41Ii8+PHBvbHlnb24g"
+    "cG9pbnRzPSIxNDAsMTUzIDE3MywxNzAgMTQwLDE4NyIgZmlsbD0iI0U5NDU2MCIvPjx0ZXh0IHg9"
+    "IjE1MCIgeT0iMjU1IiBmb250LWZhbWlseT0iQXJpYWwsc2Fucy1zZXJpZiIgZm9udC1zaXplPSIx"
+    "NSIgZmlsbD0iI0VBRUFFQSIgZm9udC13ZWlnaHQ9ImJvbGQiIHRleHQtYW5jaG9yPSJtaWRkbGUi"
+    "Pk5vIFBvc3RlcjwvdGV4dD48dGV4dCB4PSIxNTAiIHk9IjI3NyIgZm9udC1mYW1pbHk9IkFyaWFs"
+    "LHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTEiIGZpbGw9IiM3NzciIHRleHQtYW5jaG9yPSJtaWRk"
+    "bGUiPkF2YWlsYWJsZTwvdGV4dD48L3N2Zz4="
 )
 
 # ── Global CSS Injection ──────────────────────────────────────────────────────
@@ -376,38 +379,48 @@ def inject_css() -> None:
 
 # ── Card HTML builder ─────────────────────────────────────────────────────────
 def _movie_card_html(rec: dict) -> str:
-    """Return the full HTML for a single movie card."""
-    title   = rec["title"].replace('"', "&quot;").replace("<", "&lt;")
+    """Return the full HTML for a single movie card.
+
+    All user-facing strings are HTML-escaped to prevent any title or URL from
+    breaking Streamlit's markdown HTML parser mid-grid.
+    """
+    # Escape every character that could break an HTML attribute or text node.
+    # fetch_poster() already returns PLACEHOLDER_POSTER on any error so we
+    # deliberately omit an onerror= attribute — a raw SVG data URI inside
+    # onerror="…" would re-introduce the same parser-breaking angle brackets.
+    title  = (rec["title"]
+              .replace("&", "&amp;")
+              .replace("<", "&lt;")
+              .replace(">", "&gt;")
+              .replace('"', "&quot;"))
     score   = rec["score"]
     bar_pct = min(score, 100.0)
-    poster  = rec["poster"]
+    poster  = rec["poster"]   # always a safe URL — either TMDB https:// or base64 data URI
     tmdb    = f"https://www.themoviedb.org/movie/{rec['movie_id']}"
 
-    return f"""
-    <div class="nf-card">
-        <div class="nf-poster">
-            <img src="{poster}" alt="{title}" loading="lazy"
-                 onerror="this.src='{PLACEHOLDER_POSTER}'"/>
-        </div>
-        <div class="nf-overlay">
-            <div class="nf-overlay-score">{score}%</div>
-            <div class="nf-overlay-label">match score</div>
-        </div>
-        <div class="nf-card-body">
-            <div class="nf-card-title">{title}</div>
-            <div class="nf-score-row">
-                <span class="nf-score-pct">{score}%</span>
-                <span class="nf-score-cap">match</span>
-            </div>
-            <div class="nf-bar-wrap">
-                <div class="nf-bar-fill" style="width:{bar_pct}%"></div>
-            </div>
-            <a class="nf-tmdb-btn" href="{tmdb}" target="_blank" rel="noopener">
-                View on TMDB ↗
-            </a>
-        </div>
-    </div>
-    """
+    return (
+        f'<div class="nf-card">'
+        f'<div class="nf-poster">'
+        f'<img src="{poster}" alt="{title}" loading="lazy"/>'
+        f'</div>'
+        f'<div class="nf-overlay">'
+        f'<div class="nf-overlay-score">{score}%</div>'
+        f'<div class="nf-overlay-label">match score</div>'
+        f'</div>'
+        f'<div class="nf-card-body">'
+        f'<div class="nf-card-title">{title}</div>'
+        f'<div class="nf-score-row">'
+        f'<span class="nf-score-pct">{score}%</span>'
+        f'<span class="nf-score-cap">match</span>'
+        f'</div>'
+        f'<div class="nf-bar-wrap">'
+        f'<div class="nf-bar-fill" style="width:{bar_pct}%"></div>'
+        f'</div>'
+        f'<a class="nf-tmdb-btn" href="{tmdb}" target="_blank" rel="noopener">'
+        f'View on TMDB &#8599;</a>'
+        f'</div>'
+        f'</div>'
+    )
 
 
 # ── Load Model (Cached) ───────────────────────────────────────────────────────

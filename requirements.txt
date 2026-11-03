@@ -1,11 +1,13 @@
-# Core Web Application
-streamlit>=1.30.0
-python-dotenv>=1.0.0
-requests>=2.31.0
+# ── Runtime dependencies (Streamlit Cloud reads this file) ────────────────────
+# All versions pinned to what was tested locally; bump intentionally.
 
-# Data Processing & ML
-pandas>=2.0.0
-numpy>=1.24.0
-scikit-learn>=1.3.0
-nltk>=3.8.1
+# Web application
+streamlit==1.66.1
+python-dotenv==1.2.4
+requests==2.34.2
 
+# Data & ML (used at runtime by app.py auto-build fallback and generate_model.py)
+pandas==3.1.0
+numpy==2.5.4
+scikit-learn==1.9.1
+nltk==3.10.4

@@ -112,8 +112,8 @@ Scores range from `0.0` (no overlap) to `1.0` (identical tags).
 ### 1. Clone
 
 ```bash
-git clone https://github.com/ashishkuniyal/Movie-Recommender-System.git
-cd Movie-Recommender-System
+git clone https://github.com/ashishkuniyal/nextflick.git
+cd nextflick
 ```
 
 ### 2. Create a virtual environment

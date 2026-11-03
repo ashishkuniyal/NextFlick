@@ -5,11 +5,11 @@ import requests
 import streamlit as st
 from dotenv import load_dotenv
 
-# ── Load environment variables ───────────────────────────────────────────────
+# ── Load environment variables (.env for local dev) ───────────────────────────
 load_dotenv()
 
 st.set_page_config(
-    page_title="Movie Recommender System",
+    page_title="NextFlick — Movie Recommender",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -22,28 +22,52 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 MOVIE_LIST_PATH = os.path.join(MODEL_DIR, "movie_list.pkl")
 SIMILARITY_PATH = os.path.join(MODEL_DIR, "similarity.pkl")
 
-# TMDB API Key validation
-RAW_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
-TMDB_API_KEY = "" if RAW_API_KEY.lower() in ("your_tmdb_api_key_here", "none", "") else RAW_API_KEY
+# ── TMDB API Key — st.secrets first (Streamlit Cloud), os.getenv fallback ────
+def _resolve_api_key() -> str:
+    """Return a clean TMDB API key, or '' if not configured."""
+    _PLACEHOLDERS = {"your_tmdb_api_key_here", "none", ""}
 
-# Fallback SVG Poster Data URI (works 100% offline without external CDN dependency)
+    # 1. Streamlit Secrets (Streamlit Community Cloud)
+    try:
+        raw = st.secrets.get("TMDB_API_KEY", "").strip()
+        if raw.lower() not in _PLACEHOLDERS:
+            return raw
+    except Exception:
+        pass
+
+    # 2. Environment variable / .env file (local dev)
+    raw = os.getenv("TMDB_API_KEY", "").strip()
+    if raw.lower() not in _PLACEHOLDERS:
+        return raw
+
+    return ""
+
+
+TMDB_API_KEY = _resolve_api_key()
+
+# ── Fallback SVG Poster (works 100% offline, no external CDN dependency) ─────
 PLACEHOLDER_POSTER = (
     "data:image/svg+xml;utf8,"
     "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='450' viewBox='0 0 300 450'>"
-    "<rect width='300' height='450' fill='%231a1a2e'/>"
-    "<circle cx='150' cy='180' r='45' fill='%2316213e'/>"
-    "<polygon points='150,155 175,195 125,195' fill='%23e94560'/>"
-    "<text x='150' y='270' font-family='Arial, sans-serif' font-size='18' fill='%23ffffff' font-weight='bold' text-anchor='middle'>No Poster</text>"
-    "<text x='150' y='295' font-family='Arial, sans-serif' font-size='13' fill='%239a9a9a' text-anchor='middle'>Available</text>"
+    "<rect width='300' height='450' fill='%230F3460'/>"
+    "<circle cx='150' cy='175' r='50' fill='%2316213E'/>"
+    "<polygon points='140,158 170,175 140,192' fill='%23E94560'/>"
+    "<text x='150' y='260' font-family='Arial,sans-serif' font-size='16' fill='%23EAEAEA'"
+    " font-weight='bold' text-anchor='middle'>No Poster</text>"
+    "<text x='150' y='282' font-family='Arial,sans-serif' font-size='12' fill='%239a9a9a'"
+    " text-anchor='middle'>Available</text>"
     "</svg>"
 )
 
 
-# ── Load Model & Data (Cached with auto-build fallback) ───────────────────────
-@st.cache_resource(show_spinner="Loading recommendation models...")
+# ── Load Model & Data (Cached — rebuilt automatically if needed) ───────────────
+@st.cache_resource(show_spinner="⏳ Loading recommendation models…")
 def load_data():
-    """Load precomputed movie list and cosine similarity matrix with safety checks."""
-    # If precomputed models are missing, attempt auto-generation from raw data if present
+    """Load precomputed movie list and cosine similarity matrix.
+
+    Falls back to auto-generation from raw CSVs if the pkl files are missing
+    (useful for first-run after a fresh clone with the data/ CSVs present).
+    """
     if not os.path.exists(MOVIE_LIST_PATH) or not os.path.exists(SIMILARITY_PATH):
         movies_csv = os.path.join(DATA_DIR, "tmdb_5000_movies.csv")
         credits_csv = os.path.join(DATA_DIR, "tmdb_5000_credits.csv")
@@ -59,32 +83,28 @@ def load_data():
 
     with open(MOVIE_LIST_PATH, "rb") as f:
         movies_df = pickle.load(f)
-
     with open(SIMILARITY_PATH, "rb") as f:
         similarity_matrix = pickle.load(f)
 
-    # Guarantee index is strictly 0..N-1 to align perfectly with matrix rows
+    # Guarantee index is strictly 0..N-1 to align with matrix rows
     movies_df = movies_df.reset_index(drop=True)
-
     return movies_df, similarity_matrix
 
 
-# ── Poster Fetching (Cached) ─────────────────────────────────────────────────
-@st.cache_data(show_spinner=False, ttl=86400)
+# ── Poster Fetching (Cached 24 h) ────────────────────────────────────────────
+@st.cache_data(show_spinner=False, ttl=86_400)
 def fetch_poster(movie_id):
-    """Fetch movie poster URL from TMDB API with timeout and graceful fallback."""
+    """Fetch a movie poster URL from TMDB API; return SVG fallback on any error."""
     if not TMDB_API_KEY or not movie_id:
         return PLACEHOLDER_POSTER
 
     try:
         url = f"https://api.themoviedb.org/3/movie/{movie_id}"
         params = {"api_key": TMDB_API_KEY, "language": "en-US"}
-        headers = {"User-Agent": "MovieRecommenderApp/1.0"}
-        response = requests.get(url, params=params, headers=headers, timeout=(3, 5))
-
-        if response.status_code == 200:
-            data = response.json()
-            poster_path = data.get("poster_path")
+        headers = {"User-Agent": "NextFlick-MovieRecommender/2.0"}
+        resp = requests.get(url, params=params, headers=headers, timeout=(3, 5))
+        if resp.status_code == 200:
+            poster_path = resp.json().get("poster_path")
             if poster_path:
                 return f"https://image.tmdb.org/t/p/w500{poster_path}"
     except Exception:
@@ -94,85 +114,88 @@ def fetch_poster(movie_id):
 
 
 # ── Recommendation Engine ────────────────────────────────────────────────────
-def recommend(movie_title, movies_df, similarity_matrix, top_n=5):
-    """Return top_n recommended movies with poster URLs and similarity scores."""
+def recommend(movie_title: str, movies_df, similarity_matrix, top_n: int = 5) -> list[dict]:
+    """Return *top_n* recommended movies with title, movie_id, poster URL, and score.
+
+    Returns an empty list when the query movie is not found in the catalog.
+    """
     matches = movies_df[movies_df["title"] == movie_title]
     if matches.empty:
         return []
 
-    # Get integer position of the query movie
     movie_idx = matches.index[0]
-
-    # Validate index within similarity matrix bounds
     if movie_idx >= len(similarity_matrix):
         return []
 
-    # Calculate similarity rankings
     sim_scores = similarity_matrix[movie_idx]
-    ranked_indices = sorted(list(enumerate(sim_scores)), reverse=True, key=lambda x: x[1])
+    ranked = sorted(enumerate(sim_scores), key=lambda x: x[1], reverse=True)
 
-    recommendations = []
-    # Skip index 0 as it represents the query movie itself
-    for row_idx, score in ranked_indices[1 : top_n + 1]:
-        rec_row = movies_df.iloc[row_idx]
-        movie_id = rec_row["movie_id"]
-        recommendations.append({
-            "title": rec_row["title"],
-            "movie_id": movie_id,
-            "poster": fetch_poster(movie_id),
-            "score": round(float(score) * 100, 1),
-        })
-
+    recommendations: list[dict] = []
+    for row_idx, score in ranked[1 : top_n + 1]:
+        rec = movies_df.iloc[row_idx]
+        recommendations.append(
+            {
+                "title": rec["title"],
+                "movie_id": rec["movie_id"],
+                "poster": fetch_poster(rec["movie_id"]),
+                "score": round(float(score) * 100, 1),
+            }
+        )
     return recommendations
 
 
 # ── Main Application ─────────────────────────────────────────────────────────
-def main():
+def main() -> None:
     movies, similarity = load_data()
 
-    # Handle missing model files
+    # ── Error state — model files missing ────────────────────────────────────
     if movies is None or similarity is None:
-        st.title("🎬 Movie Recommender System")
+        st.title("🎬 NextFlick — Movie Recommender")
         st.error(
-            "⚠️ **Model files not found!**\n\n"
-            "The model artifacts (`model/movie_list.pkl` and `model/similarity.pkl`) are missing.\n\n"
-            "To generate them, run the preprocessing script in your terminal:\n\n"
-            "```bash\npython generate_model.py\n```\n\n"
-            "Then refresh this page."
+            "⚠️ **Model files not found.**\n\n"
+            "The artifacts `model/movie_list.pkl` and `model/similarity.pkl` are missing.\n\n"
+            "Generate them locally:\n"
+            "```bash\npython generate_model.py\n```\n"
+            "Then commit them and push, or restart the app."
         )
         return
 
-    # ── Sidebar ──────────────────────────────────────────────────────────────
+    # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.header("⚙️ Configuration")
-        top_n = st.slider("Number of recommendations", min_value=3, max_value=10, value=5, step=1)
+        st.header("⚙️ Settings")
+        top_n = st.slider("Recommendations", min_value=3, max_value=10, value=5, step=1)
 
         st.markdown("---")
-        st.subheader("🔑 TMDB API Status")
+        st.subheader("🔑 TMDB API")
         if TMDB_API_KEY:
-            st.success("API Key Active (Posters enabled)")
+            st.success("✅ API key active — posters enabled")
         else:
-            st.warning("API Key not configured")
-            st.info(
-                "To display movie posters, add your TMDB API key in your `.env` or Hugging Face Space secrets:\n\n"
-                "```env\nTMDB_API_KEY=your_key_here\n```\n\n"
-                "Get a free key at [themoviedb.org](https://www.themoviedb.org/settings/api)."
+            st.warning("⚠️ No API key — SVG placeholders shown")
+            st.caption(
+                "Add `TMDB_API_KEY` to **Streamlit Secrets** (cloud) "
+                "or your local `.env` file.\n\n"
+                "[Get a free key →](https://www.themoviedb.org/settings/api)"
             )
 
         st.markdown("---")
-        st.subheader("📊 Dataset Info")
-        st.write(f"• **Catalog Size:** {len(movies):,} movies")
-        st.write("• **Features:** Genre, Keywords, Cast, Director, Overview")
-        st.write("• **Algorithm:** Bag-of-Words & Cosine Similarity")
+        st.subheader("📊 Dataset")
+        st.write(f"**{len(movies):,}** movies in catalog")
+        st.write("Features: genres · keywords · cast · director · overview")
+        st.write("Algorithm: Bag-of-Words + Cosine Similarity")
 
-    # ── Main Header ──────────────────────────────────────────────────────────
-    st.title("🎬 Movie Recommender System")
-    st.caption("Content-based recommendation engine powered by Bag-of-Words & Cosine Similarity")
+        st.markdown("---")
+        st.caption(
+            "Built with [Streamlit](https://streamlit.io) · "
+            "Data by [TMDB](https://www.themoviedb.org)"
+        )
+
+    # ── Main Header ───────────────────────────────────────────────────────────
+    st.title("🎬 NextFlick")
+    st.caption("Content-based movie recommendations · Bag-of-Words · Cosine Similarity")
     st.markdown("---")
 
     movie_titles = list(movies["title"].values)
 
-    # Initialize session state for random movie picker
     if "selected_movie" not in st.session_state:
         st.session_state.selected_movie = movie_titles[0] if movie_titles else ""
 
@@ -181,39 +204,36 @@ def main():
     with col_rand:
         st.write("")
         st.write("")
-        if st.button("🎲 Random Movie", use_container_width=True):
+        if st.button("🎲 Surprise me", use_container_width=True):
             st.session_state.selected_movie = random.choice(movie_titles)
             st.rerun()
 
     with col_select:
-        # Determine selectbox index safely
         try:
             current_index = movie_titles.index(st.session_state.selected_movie)
         except ValueError:
             current_index = 0
 
         selected_movie = st.selectbox(
-            "Select or search for a movie you like:",
+            "Search or pick a movie you like:",
             movie_titles,
             index=current_index,
             key="movie_dropdown",
         )
         st.session_state.selected_movie = selected_movie
 
-    # Recommendation Trigger
-    if st.button("🔍 Recommend Similar Movies", type="primary", use_container_width=True):
-        with st.spinner(f"Finding movies similar to '{selected_movie}'..."):
-            recommendations = recommend(selected_movie, movies, similarity, top_n=top_n)
+    # ── Recommend button ──────────────────────────────────────────────────────
+    if st.button("🔍 Find Similar Movies", type="primary", use_container_width=True):
+        with st.spinner(f"Finding movies similar to **{selected_movie}**…"):
+            results = recommend(selected_movie, movies, similarity, top_n=top_n)
 
-        if not recommendations:
-            st.warning(f"Could not find recommendations for '{selected_movie}'.")
+        if not results:
+            st.warning(f"No recommendations found for **{selected_movie}**.")
             return
 
-        st.markdown(f"### Movies Similar to **{selected_movie}**")
-
-        # Dynamic responsive layout
-        cols = st.columns(len(recommendations))
-        for col, rec in zip(cols, recommendations):
+        st.markdown(f"### 🎯 Because you liked **{selected_movie}**")
+        cols = st.columns(len(results))
+        for col, rec in zip(cols, results):
             with col:
                 st.image(rec["poster"], use_container_width=True)
                 st.markdown(f"**{rec['title']}**")
